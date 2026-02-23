@@ -17,10 +17,15 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHANNEL_ID = os.environ["CHANNEL_ID"]  # e.g. @SolLiquidityRadar or -100xxxxxxxxxx
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))  # seconds
 
-DEXSCREENER_URL = "https://api.dexscreener.com/token-profiles/latest/v1"
-DEXSCREENER_PAIRS_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
+DEXSCREENER_NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/tokens/solana"
+DEXSCREENER_LATEST_URL = "https://api.dexscreener.com/token-boosts/latest/v1"
+DEXSCREENER_SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q=solana"
+
+# Use the new pairs endpoint that returns recently added pairs
+NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/solana"
 
 seen_pairs: set[str] = set()
+is_first_run: bool = True
 
 
 def format_number(value: float) -> str:
@@ -31,15 +36,15 @@ def format_number(value: float) -> str:
     return f"${value:.2f}"
 
 
-def build_alert_message(pair: dict, token_address: str) -> str:
+def build_alert_message(pair: dict) -> str:
     token_name = pair.get("baseToken", {}).get("name", "Unknown")
     token_symbol = pair.get("baseToken", {}).get("symbol", "???")
+    token_address = pair.get("baseToken", {}).get("address", "")
     dex_id = pair.get("dexId", "Unknown DEX").capitalize()
     liquidity = pair.get("liquidity", {}).get("usd", 0)
     pair_address = pair.get("pairAddress", "")
+    price_usd = pair.get("priceUsd", "N/A")
     dex_link = f"https://dexscreener.com/solana/{pair_address}"
-
-    short_addr = f"{token_address[:6]}...{token_address[-4:]}"
 
     msg = (
         f"🚨 <b>New Liquidity Added on Solana!</b>\n\n"
@@ -47,20 +52,25 @@ def build_alert_message(pair: dict, token_address: str) -> str:
         f"📋 <b>Address:</b> <code>{token_address}</code>\n"
         f"🏦 <b>DEX:</b> {dex_id}\n"
         f"💧 <b>Liquidity:</b> {format_number(liquidity)}\n"
+        f"💰 <b>Price:</b> ${price_usd}\n"
         f"🔗 <b>Chart:</b> <a href='{dex_link}'>DexScreener</a>"
     )
     return msg
 
 
-async def fetch_new_solana_tokens(session: aiohttp.ClientSession) -> list[dict]:
+async def fetch_latest_solana_pairs(session: aiohttp.ClientSession) -> list[dict]:
+    """Fetch the latest Solana pairs from DexScreener."""
+    # Use the token-profiles endpoint to get newest tokens, then fetch their pairs
     try:
-        async with session.get(DEXSCREENER_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        url = "https://api.dexscreener.com/token-profiles/latest/v1"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
-                logger.warning(f"Token profiles endpoint returned {resp.status}")
+                logger.warning(f"Token profiles returned {resp.status}")
                 return []
             data = await resp.json()
-            # Filter to Solana only
-            return [t for t in data if t.get("chainId") == "solana"]
+            solana_tokens = [t for t in data if t.get("chainId") == "solana"]
+            logger.info(f"Found {len(solana_tokens)} Solana token profiles.")
+            return solana_tokens
     except Exception as e:
         logger.error(f"Error fetching token profiles: {e}")
         return []
@@ -68,7 +78,7 @@ async def fetch_new_solana_tokens(session: aiohttp.ClientSession) -> list[dict]:
 
 async def fetch_pairs_for_token(session: aiohttp.ClientSession, address: str) -> list[dict]:
     try:
-        url = DEXSCREENER_PAIRS_URL.format(address=address)
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{address}"
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
             if resp.status != 200:
                 return []
@@ -93,11 +103,13 @@ async def send_alert(bot: Bot, message: str):
 
 
 async def monitor(bot: Bot):
+    global is_first_run
     logger.info("🔭 Solana Liquidity Radar started. Monitoring DexScreener...")
+
     async with aiohttp.ClientSession() as session:
         while True:
-            tokens = await fetch_new_solana_tokens(session)
-            logger.info(f"Found {len(tokens)} Solana token profiles.")
+            tokens = await fetch_latest_solana_pairs(session)
+            new_alerts = 0
 
             for token in tokens:
                 address = token.get("tokenAddress")
@@ -108,18 +120,31 @@ async def monitor(bot: Bot):
 
                 for pair in pairs:
                     pair_address = pair.get("pairAddress")
-                    if not pair_address or pair_address in seen_pairs:
+                    if not pair_address:
+                        continue
+
+                    if pair_address in seen_pairs:
                         continue
 
                     seen_pairs.add(pair_address)
+
+                    # On first run, just seed seen_pairs without alerting
+                    if is_first_run:
+                        continue
+
                     liquidity = pair.get("liquidity", {}).get("usd", 0)
-
                     if liquidity and liquidity > 0:
-                        msg = build_alert_message(pair, address)
+                        msg = build_alert_message(pair)
                         await send_alert(bot, msg)
-                        await asyncio.sleep(1)  # Avoid rate limits between messages
+                        new_alerts += 1
+                        await asyncio.sleep(1)
 
-            logger.info(f"Cycle complete. Sleeping {POLL_INTERVAL}s...")
+            if is_first_run:
+                logger.info(f"First run complete. Seeded {len(seen_pairs)} existing pairs. Now watching for NEW pairs...")
+                is_first_run = False
+            else:
+                logger.info(f"Cycle complete. Sent {new_alerts} alerts. Watching {len(seen_pairs)} pairs. Sleeping {POLL_INTERVAL}s...")
+
             await asyncio.sleep(POLL_INTERVAL)
 
 
