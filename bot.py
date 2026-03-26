@@ -1,10 +1,16 @@
-import os
 import asyncio
-import aiohttp
+import os
 import logging
+
+import aiohttp
+from dotenv import load_dotenv
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
+
+from dex_paid import monitor_dex_paid
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,10 +18,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHANNEL_ID = os.environ["CHANNEL_ID"]
+BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ["BOT_TOKEN"]
+CHANNEL_ID = os.environ.get("TELEGRAM_CHAT_ID") or os.environ["CHANNEL_ID"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 MIN_LIQUIDITY = float(os.environ.get("MIN_LIQUIDITY", "1000"))  # Default $1,000
+ENABLE_DEX_PAID = os.environ.get("ENABLE_DEX_PAID", "true").lower() in ("1", "true", "yes")
+ENABLE_LIQUIDITY = os.environ.get("ENABLE_LIQUIDITY", "true").lower() in ("1", "true", "yes")
 
 seen_pairs: set[str] = set()
 is_first_run: bool = True
@@ -119,7 +127,7 @@ async def send_alert(bot: Bot, message: str):
         logger.error(f"Failed to send Telegram message: {e}")
 
 
-async def monitor(bot: Bot):
+async def monitor_liquidity(bot: Bot):
     global is_first_run
     logger.info(f"🔭 Solana Liquidity Radar started. Min liquidity: ${MIN_LIQUIDITY:,.0f}")
 
@@ -173,7 +181,18 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     me = await bot.get_me()
     logger.info(f"Bot started as @{me.username}")
-    await monitor(bot)
+
+    tasks = []
+    if ENABLE_LIQUIDITY:
+        tasks.append(asyncio.create_task(monitor_liquidity(bot)))
+    if ENABLE_DEX_PAID:
+        tasks.append(asyncio.create_task(monitor_dex_paid(bot)))
+
+    if not tasks:
+        logger.error("Both ENABLE_LIQUIDITY and ENABLE_DEX_PAID are disabled. Nothing to do.")
+        return
+
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

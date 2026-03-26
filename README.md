@@ -1,56 +1,99 @@
-# 🔭 Solana Liquidity Radar Bot
+# Solana Liquidity Radar + DEX Paid (Token Boost) Bot
 
-Monitors DexScreener for new Solana liquidity events and sends alerts to a Telegram channel.
+Monitors DexScreener for:
 
-## Setup
+1. **New Solana liquidity** (token profiles feed) — original “liquidity radar” alerts.
+2. **New DEX Paid listings** — [DexScreener Token Boosts](https://docs.dexscreener.com/api/reference) (`GET /token-boosts/latest/v1`), i.e. paid/boosted Solana tokens, with a detailed Telegram report (DexScreener + Rugcheck enrichment).
 
-### 1. Clone / upload these files to a GitHub repo
+Uses only free public APIs: **DexScreener** and **Rugcheck** (no keys).
 
-Railway deploys directly from GitHub.
+## Environment variables
 
-### 2. Set Environment Variables in Railway
+Copy `.env.example` to `.env` and set:
 
-In your Railway project → **Variables**, add:
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_TOKEN` | Yes* | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_CHAT_ID` | Yes* | Channel `@username` or numeric chat ID |
+| `POLL_INTERVAL` | No | Seconds between scans (default `60`) |
+| `DEX_PAID_POLL_INTERVAL` | No | Override for DEX Paid loop only (defaults to `POLL_INTERVAL`) |
+| `ENABLE_LIQUIDITY` | No | `true` / `false` — liquidity radar (default `true`) |
+| `ENABLE_DEX_PAID` | No | `true` / `false` — token boost monitor (default `true`) |
+| `MIN_LIQUIDITY` | No | Minimum USD liquidity for liquidity alerts (default `1000`) |
 
-| Variable | Value |
-|---|---|
-| `BOT_TOKEN` | Your Telegram bot token from @BotFather |
-| `CHANNEL_ID` | Your channel username e.g. `@SolLiquidityRadar` or numeric ID |
-| `POLL_INTERVAL` | (Optional) Seconds between scans. Default: `60` |
+\*Legacy names `BOT_TOKEN` and `CHANNEL_ID` still work if `TELEGRAM_*` are not set.
 
-### 3. Make the bot an admin of your channel
+## Local setup
 
-In Telegram:
-- Go to your channel → Edit → Administrators
-- Add your bot and give it **"Post Messages"** permission
+From the project folder (`SolanaLiquidityRadarBot`):
 
-### 4. Deploy on Railway
-
-- Create a new project → **Deploy from GitHub repo**
-- Select your repo
-- Railway will auto-detect Python and run `python bot.py`
-
-## How It Works
-
-1. Every `POLL_INTERVAL` seconds, the bot hits the DexScreener **token-profiles** endpoint to get the latest Solana token listings.
-2. For each new token, it fetches the associated trading pairs.
-3. Any pair with liquidity > $0 that hasn't been seen before triggers a Telegram alert.
-4. Seen pairs are tracked in memory (resets on restart — this is fine for a polling bot).
-
-## Alert Format
-
+```powershell
+cd "C:\Projects\New folder\SolanaLiquidityRadarBot"
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
 ```
-🚨 New Liquidity Added on Solana!
 
-🪙 Token: MyToken ($MYT)
-📋 Address: ABC123...XYZ9
-🏦 DEX: Raydium
-💧 Liquidity: $12.5K
-🔗 Chart: DexScreener
+Edit `.env` with `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID`, then:
+
+```powershell
+python bot.py
 ```
+
+Make the bot an **administrator** of your channel with permission to **post messages** (same as before).
+
+## DEX Paid alert contents
+
+For each **new** boosted mint (not seen before in this process):
+
+- Name, symbol, contract (mint)
+- Pair age (from DexScreener `pairCreatedAt`), price, market cap, liquidity (USD)
+- LP status (from Rugcheck risk labels), mint authority / freeze authority (shown as revoked or not)
+- Top 10 holders % (when Rugcheck exposes `topHolders`)
+- Dev wallet and holding % (when present in Rugcheck)
+- Links: **Axiom**, **DexScreener** (boost URL when available), **Rugcheck**, **Pump.fun**
+
+The first poll **seeds** all current boosted mints without alerting, so you only get **new** boosts after startup (same pattern as the liquidity radar).
+
+## Deploy on Railway
+
+### One-time: CLI
+
+1. Install the [Railway CLI](https://docs.railway.com/guides/cli) and log in:
+
+   ```powershell
+   npm i -g @railway/cli
+   railway login
+   ```
+
+2. In the project directory, link and deploy:
+
+   ```powershell
+   cd "C:\Projects\New folder\SolanaLiquidityRadarBot"
+   railway init
+   railway up
+   ```
+
+   Or connect the GitHub repo in the Railway dashboard and set the **root directory** to this repo if it lives in a monorepo.
+
+### Variables on Railway
+
+In the Railway project → **Variables**, add at least:
+
+- `TELEGRAM_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
+Optional: `POLL_INTERVAL`, `ENABLE_LIQUIDITY`, `ENABLE_DEX_PAID`, `MIN_LIQUIDITY`, `DEX_PAID_POLL_INTERVAL`.
+
+`railway.toml` sets `startCommand` to `python bot.py` and uses the Nixpacks builder.
 
 ## Notes
 
-- The bot uses DexScreener's free public API — no API key needed.
-- To avoid Telegram rate limits, there's a 1s delay between consecutive alerts.
-- If you want to add a minimum liquidity filter later, set a `MIN_LIQUIDITY` env var and add a check in `bot.py`.
+- **“DEX Paid”** here follows DexScreener’s **Token Boosts** list (paid promotion on DexScreener). The separate **Ads** feed (`/ads/latest/v1`) is a different product; this bot uses boosts as the standard “paid DEX” signal.
+- Seen tokens/pairs are kept **in memory**; restarts re-seed and only alert on **new** items after the first cycle.
+- Rugcheck occasionally returns errors; the bot still sends the DexScreener block and shows **N/A** or **Unknown** for missing Rugcheck fields.
+
+## License
+
+Private / your license.
